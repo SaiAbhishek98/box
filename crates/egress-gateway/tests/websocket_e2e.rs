@@ -702,7 +702,13 @@ fn start_gateway(
         dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
         ..config
     };
-    MitmInterceptor::start(config, CapabilitySet::default(), policy).unwrap()
+    MitmInterceptor::start_with_emitter(
+        config,
+        CapabilitySet::default(),
+        policy,
+        Box::new(RECORDS.with(Clone::clone)),
+    )
+    .unwrap()
 }
 
 /// A gateway with the default config, permitting `host` and every request to it.
@@ -722,7 +728,13 @@ fn credential_gateway(host: &str, upstream: &WsUpstream, controls: CapabilitySet
         dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
         ..MitmConfig::default()
     };
-    MitmInterceptor::start(config, controls, PathPolicy::permitting(host)).unwrap()
+    MitmInterceptor::start_with_emitter(
+        config,
+        controls,
+        PathPolicy::permitting(host),
+        Box::new(RECORDS.with(Clone::clone)),
+    )
+    .unwrap()
 }
 
 fn pattern(host: &str, port: u16) -> DestinationPattern {
@@ -770,13 +782,22 @@ fn emitted_denials(emitter: &StubEmitter) -> Vec<(String, String, String)> {
 }
 
 /// The deny reasons in the gateway's audit log.
-fn denials(handle: &MitmHandle) -> Vec<String> {
-    handle
-        .drain_audit_events()
+fn denials(_handle: &MitmHandle) -> Vec<String> {
+    records()
         .into_iter()
-        .filter(|event| event.decision == AuditDecision::Deny)
-        .map(|event| event.reason)
+        .filter(|record| record.decision == AuditDecision::Deny)
+        .map(|record| record.reason)
         .collect()
+}
+
+thread_local! {
+    /// The decision records of the gateways this test thread starts.
+    static RECORDS: StubEmitter = StubEmitter::new();
+}
+
+/// The decision records of this test's gateways.
+fn records() -> Vec<egress_gateway::EgressDecision> {
+    RECORDS.with(StubEmitter::records)
 }
 
 /// A reply that a server with no WebSocket endpoint gives.
@@ -890,13 +911,14 @@ fn a_plaintext_websocket_handshake_is_refused() {
         }
     });
     let policy = PathPolicy::permitting(host);
-    let handle = MitmInterceptor::start(
+    let handle = MitmInterceptor::start_with_emitter(
         MitmConfig {
             dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
             ..MitmConfig::default()
         },
         CapabilitySet::default(),
         policy.clone(),
+        Box::new(RECORDS.with(Clone::clone)),
     )
     .unwrap();
 
@@ -973,7 +995,7 @@ fn an_h2c_upgrade_on_a_normal_request_is_still_stripped() {
     let host = "h2c.ws.test";
     let upstream = TlsUpstream::start(host);
     let policy = PathPolicy::permitting(host);
-    let handle = MitmInterceptor::start(
+    let handle = MitmInterceptor::start_with_emitter(
         MitmConfig {
             upstream_ca_pems: vec![upstream.ca_pem()],
             dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
@@ -981,6 +1003,7 @@ fn an_h2c_upgrade_on_a_normal_request_is_still_stripped() {
         },
         CapabilitySet::default(),
         policy.clone(),
+        Box::new(RECORDS.with(Clone::clone)),
     )
     .unwrap();
 
@@ -1644,7 +1667,7 @@ fn a_credential_is_injected_on_the_handshake_and_a_reflected_secret_is_redacted(
     let Credentialed {
         mut client,
         reply,
-        handle,
+        handle: _handle,
         upstream,
         phantom,
     } = open_credentialed("secret.ws.test", Answer::Reflect);
@@ -1673,8 +1696,8 @@ fn a_credential_is_injected_on_the_handshake_and_a_reflected_secret_is_redacted(
     client.send(TEXT, b"after");
     assert_eq!(client.recv().payload, b"after");
 
-    for event in handle.drain_audit_events() {
-        assert!(!format!("{event:?}").contains("sk_live_REALSECRET"));
+    for record in records() {
+        assert!(!format!("{record:?}").contains("sk_live_REALSECRET"));
     }
 }
 

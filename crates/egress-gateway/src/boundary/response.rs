@@ -34,33 +34,4 @@ impl InterceptedResponse {
             body,
         }
     }
-
-    /// Whether this is a 3xx redirect (its `Location` re-enters the request path at DNS and
-    /// `net:connect` rather than being followed blind).
-    pub fn is_redirect(&self) -> bool {
-        (300..400).contains(&self.status)
-    }
-
-    /// The `Location` header value for a redirect, if present.
-    pub fn location(&self) -> Option<&str> {
-        self.headers.get("location")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn redirect_detection_and_location() {
-        let mut headers = HeaderMap::new();
-        headers.append("Location", "http://169.254.169.254/");
-        let res = InterceptedResponse::http(302, headers, BodyRef::Empty);
-        assert!(res.is_redirect());
-        assert_eq!(res.location(), Some("http://169.254.169.254/"));
-
-        let ok = InterceptedResponse::http(200, HeaderMap::new(), BodyRef::Empty);
-        assert!(!ok.is_redirect());
-        assert!(ok.location().is_none());
-    }
 }

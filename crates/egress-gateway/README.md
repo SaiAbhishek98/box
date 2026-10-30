@@ -20,7 +20,7 @@ behind the `tls-intercept` feature:
 
 | Area | Items |
 |---|---|
-| Audit values | `AuditDecision`, `EgressDecision`, `NetworkAuditEvent`, `RequestId`, `SharedAuditLog` |
+| Audit values | `AuditDecision`, `EgressDecision`, `RequestId` |
 | Boundary values | `BodyRef`, `DenyReason`, `HeaderMap`, `InterceptedRequest`, `InterceptedResponse`, `Mutation`, `MutationTarget`, `Target`, `Verdict` |
 | Credential mutators | `CapabilityContext`, `CapabilityFault`, `CapabilityOutcome`, `CapabilitySet`, `CapabilitySetBuilder`, `CredentialCapability` |
 | Effect lifecycle | `EffectAttempt`, `EffectInterceptor`, `EffectOutcome`, `EffectPermit` |
@@ -193,7 +193,7 @@ fn start() -> egress_gateway::Result<MitmHandle> {
 
 `EffectAttempt` is `#[non_exhaustive]`, so an implementation needs a wildcard arm.
 
-`MitmConfig` has ten fields:
+`MitmConfig` has nine fields:
 
 | Field | Type | Default |
 |---|---|---|
@@ -202,7 +202,6 @@ fn start() -> egress_gateway::Result<MitmHandle> {
 | `intercept_ca_dir` | `Option<PathBuf>` | `None` |
 | `response_limits` | `ResponseLimits` | `max_body_bytes: 16 MiB` |
 | `expected_token` | `Option<String>` | `None` |
-| `credential_env` | `Vec<(String, String)>` | empty |
 | `upstream_ca_pems` | `Vec<String>` | empty |
 | `dns_overrides` | `Vec<(String, IpAddr)>` | empty |
 | `upstream_read_deadline` | `Duration` | 300 s |
@@ -220,7 +219,7 @@ exchange whose request and reply together take longer than the deadline, with no
 workload; `box.toml` exposes no key for it.
 
 `MitmHandle` exposes `port()`, `unix_socket_path()`, `intercept_ca_path()`,
-`env_vars()`, `drain_audit_events()`, and `shutdown()`.
+`env_vars()`, and `shutdown()`.
 `env_vars()` returns the four `HTTP_PROXY`/`HTTPS_PROXY` spellings on the TCP
 transport and no proxy variable on AF_UNIX. It adds `SSL_CERT_FILE` on both
 transports when a CA directory is configured. `Drop` shuts the adapter down and

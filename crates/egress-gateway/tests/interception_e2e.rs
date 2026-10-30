@@ -180,7 +180,18 @@ fn start_gateway(
         dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
         ..MitmConfig::default()
     };
-    MitmInterceptor::start(config, controls, policy).unwrap()
+    let records = Box::new(RECORDS.with(Clone::clone));
+    MitmInterceptor::start_with_emitter(config, controls, policy, records).unwrap()
+}
+
+thread_local! {
+    /// The decision records of the gateways this test thread starts.
+    static RECORDS: StubEmitter = StubEmitter::new();
+}
+
+/// The decision records of this test's gateways.
+fn records() -> Vec<egress_gateway::EgressDecision> {
+    RECORDS.with(StubEmitter::records)
 }
 
 // ============================================================================================
@@ -226,9 +237,9 @@ fn opaque_swap_reaches_upstream_with_real_secret() {
         "the phantom token must not survive to the upstream"
     );
 
-    // The real secret must not appear anywhere in the audit log.
-    for ev in handle.drain_audit_events() {
-        assert!(!format!("{ev:?}").contains("sk_live_REALSECRET"));
+    // The real secret must not appear anywhere in the decision records.
+    for record in records() {
+        assert!(!format!("{record:?}").contains("sk_live_REALSECRET"));
     }
 }
 
@@ -479,9 +490,14 @@ fn policy_denied_host_is_refused_at_connect() {
         dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
         ..MitmConfig::default()
     };
-    let handle =
-        MitmInterceptor::start(config, CapabilitySet::default(), FixedPolicy::denying_all())
-            .unwrap();
+    let emitter = Box::new(RECORDS.with(Clone::clone));
+    let handle = MitmInterceptor::start_with_emitter(
+        config,
+        CapabilitySet::default(),
+        FixedPolicy::denying_all(),
+        emitter,
+    )
+    .unwrap();
 
     let mut client = WorkloadClient::connect_raw(proxy_port(&handle));
     let reply = client.raw_connect(host, 443);
@@ -490,8 +506,11 @@ fn policy_denied_host_is_refused_at_connect() {
         "a policy-denied host must be refused at the gate: {reply:?}"
     );
 
-    let events = handle.drain_audit_events();
-    assert!(events.iter().any(|e| e.decision == AuditDecision::Deny));
+    assert!(
+        records()
+            .iter()
+            .any(|record| record.decision == AuditDecision::Deny)
+    );
 }
 
 /// The PDP governs the L7 legs too: it sees the request effect for an authorized host, and its verdict
@@ -1032,7 +1051,14 @@ fn a_path_scoped_secret_never_rides_plain_http() {
         dns_overrides: vec![(host.to_string(), "127.0.0.1".parse().unwrap())],
         ..MitmConfig::default()
     };
-    let handle = MitmInterceptor::start(config, controls, FixedPolicy::allowing(&[host])).unwrap();
+    let emitter = Box::new(RECORDS.with(Clone::clone));
+    let handle = MitmInterceptor::start_with_emitter(
+        config,
+        controls,
+        FixedPolicy::allowing(&[host]),
+        emitter,
+    )
+    .unwrap();
 
     for path in ["/v1/chat", "/%76%31/chat", "/%%3761/chat"] {
         let reply = plain_exchange(
@@ -1060,7 +1086,7 @@ fn a_path_scoped_secret_never_rides_plain_http() {
         Vec::<String>::new(),
         "no request reached the origin"
     );
-    let audit = format!("{:?}", handle.drain_audit_events());
-    assert!(audit.contains("a secret must ride TLS"), "{audit}");
-    assert!(audit.contains("not RFC 3986"), "{audit}");
+    let reasons = format!("{:?}", records());
+    assert!(reasons.contains("a secret must ride TLS"), "{reasons}");
+    assert!(reasons.contains("not RFC 3986"), "{reasons}");
 }

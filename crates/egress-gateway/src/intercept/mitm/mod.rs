@@ -22,7 +22,6 @@ use rustls::ClientConfig;
 
 use self::ca::EphemeralCa;
 use self::handle::BoundTransport;
-use crate::audit::SharedAuditLog;
 use crate::capability::CapabilitySet;
 use crate::effect::EffectInterceptor;
 use crate::error::{ProxyError, Result};
@@ -65,8 +64,6 @@ pub struct MitmConfig {
     pub response_limits: ResponseLimits,
     /// An optional expected proxy session token (best-effort CONNECT check).
     pub expected_token: Option<String>,
-    /// Not read by the gateway.
-    pub credential_env: Vec<(String, String)>,
     /// Extra CA certificates (PEM) added to the **additive** upstream trust bundle — a
     /// deployment's private CA, or a corporate root the box must trust for the upstream leg. Added on
     /// top of the system roots; never replaces them.
@@ -102,7 +99,6 @@ impl Default for MitmConfig {
             intercept_ca_dir: None,
             response_limits: ResponseLimits::default(),
             expected_token: None,
-            credential_env: Vec::new(),
             upstream_ca_pems: Vec::new(),
             dns_overrides: Vec::new(),
             upstream_read_deadline: std::time::Duration::from_secs(300),
@@ -122,8 +118,6 @@ pub(crate) struct SharedState {
     pub(crate) ca: EphemeralCa,
     /// The upstream (client) TLS config with the additive trust bundle.
     pub(crate) upstream_config: Arc<ClientConfig>,
-    /// The fast in-memory audit log.
-    audit: SharedAuditLog,
     /// The final outbound decision emitter.
     emitter: Box<dyn Emitter>,
     /// The authorization authority for every outbound effect.
@@ -235,7 +229,6 @@ impl MitmInterceptor {
         // (a deployment's private CA / corporate root).
         let upstream_config = Arc::new(tls::upstream_client_config(&config.upstream_ca_pems)?);
 
-        let audit = SharedAuditLog::new();
         let expected_token = config.expected_token.clone();
 
         let state = Arc::new(SharedState {
@@ -243,7 +236,6 @@ impl MitmInterceptor {
             config: config.clone(),
             ca,
             upstream_config,
-            audit: audit.clone(),
             emitter,
             effect_interceptor,
             expected_token,
@@ -301,12 +293,6 @@ impl MitmInterceptor {
             }
         };
 
-        Ok(MitmHandle::new(
-            transport,
-            ca_path,
-            audit,
-            stop,
-            accept_thread,
-        ))
+        Ok(MitmHandle::new(transport, ca_path, stop, accept_thread))
     }
 }

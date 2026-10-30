@@ -12,7 +12,7 @@ use super::SharedState;
 use super::connect::ConnectRequest;
 use super::l7::{self, WorkloadResponse};
 use super::resolve::PinnedDestination;
-use crate::audit::{Decision as AuditDecision, EgressDecision, NetworkAuditEvent};
+use crate::audit::{Decision as AuditDecision, EgressDecision};
 use crate::effect::{ClaimedEffectPermit, EffectAttempt, EffectOutcome};
 
 /// A counting semaphore bounding the number of in-flight connection threads, with no external
@@ -86,17 +86,7 @@ pub(super) fn accept_loop(listener: TcpListener, state: Arc<SharedState>, stop: 
         std::thread::spawn(move || {
             // The permit lives for the duration of the connection; dropping it frees the slot.
             let _permit = permit;
-            if let Err(err) = crate::proxy::server::serve_connection(stream, &state, false) {
-                // Never silently swallow a handler failure — record it (secret-free) so a broken
-                // connection is observable rather than a mystery. `host`/`port` are unknown this
-                // early, so the audit line names the failure with a placeholder target.
-                state.audit.push(NetworkAuditEvent::deny(
-                    "-",
-                    0,
-                    format!("connection handler error: {err}"),
-                    RequestId::new("egress-connection-error"),
-                ));
-            }
+            let _ = crate::proxy::server::serve_connection(stream, &state, false);
         });
     }
 }
@@ -127,14 +117,7 @@ pub(super) fn accept_loop_unix(
         let state = state.clone();
         std::thread::spawn(move || {
             let _permit = permit;
-            if let Err(err) = crate::proxy::server::serve_connection(stream, &state, true) {
-                state.audit.push(NetworkAuditEvent::deny(
-                    "-",
-                    0,
-                    format!("connection handler error: {err}"),
-                    RequestId::new("egress-connection-error"),
-                ));
-            }
+            let _ = crate::proxy::server::serve_connection(stream, &state, true);
         });
     }
 }
@@ -152,13 +135,6 @@ impl OpenUpstreamError {
         match self {
             Self::Denied(error) => l7::interceptor_error(error, None),
             Self::Failed => WorkloadResponse::bare(502),
-        }
-    }
-
-    fn audit_reason(&self) -> &'static str {
-        match self {
-            Self::Denied(_) => "connect effect denied",
-            Self::Failed => "connect effect or outcome recording failed",
         }
     }
 }
@@ -192,12 +168,6 @@ pub(crate) fn open_governed_upstream(
             } else {
                 OpenUpstreamError::Failed
             };
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                refusal.audit_reason().to_string(),
-                correlation.clone(),
-            ));
             return Err(refusal);
         }
     }
@@ -224,18 +194,7 @@ pub(crate) fn open_governed_upstream(
     // (`EffectAttempt::Connect`) before the socket opens — there is no allow/deny authority in this
     // crate. Every connection is terminated and inspected; see `open_upstream`'s `http_visibility` for
     // why no route is an opaque tunnel.
-    match open_upstream(state, connect, &pinned, correlation) {
-        Ok(upstream) => Ok(upstream),
-        Err(error) => {
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                error.audit_reason().to_string(),
-                correlation.clone(),
-            ));
-            Err(error)
-        }
-    }
+    open_upstream(state, connect, &pinned, correlation)
 }
 
 /// Claim and perform pinned upstream socket attempts shared by TLS and opaque paths.
@@ -579,7 +538,6 @@ mod tests {
             config: super::super::MitmConfig::default(),
             ca: super::super::ca::EphemeralCa::generate(None, None).unwrap(),
             upstream_config: Arc::new(super::super::tls::upstream_client_config(&[]).unwrap()),
-            audit: crate::audit::SharedAuditLog::new(),
             emitter: Box::new(StubEmitter::new()),
             effect_interceptor: policy,
             expected_token: None,

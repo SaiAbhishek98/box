@@ -10,7 +10,7 @@ use super::request_leg::{self, RequestDecision};
 use super::response_leg::{self, ResponseDecision};
 use super::{SharedState, http1};
 use crate::audit::Decision as AuditDecision;
-use crate::audit::{EgressDecision, NetworkAuditEvent};
+use crate::audit::EgressDecision;
 use crate::boundary::{BodyRef, HeaderMap, InterceptedRequest, InterceptedResponse, Target};
 use crate::capability::CapabilityContext;
 use crate::client::http::Upstream;
@@ -54,12 +54,6 @@ pub(crate) async fn forward_tls(
             &reason,
             correlation.clone(),
         );
-        state.audit.push(NetworkAuditEvent::deny(
-            &connect.host,
-            connect.port,
-            reason,
-            correlation,
-        ));
         return Ok(WorkloadResponse::refusal(
             error.http_status(),
             b"request authority rejected",
@@ -180,12 +174,6 @@ async fn run_l7_legs(
     match request_leg::evaluate_and_apply(&state.controls, &mut req, &cx) {
         RequestDecision::Block(reason) => {
             let reason = reason.to_string(); // format once, use for both audit sinks
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                reason.clone(),
-                correlation.clone(),
-            ));
             emit_decision(
                 state,
                 DecisionSubject {
@@ -213,12 +201,6 @@ async fn run_l7_legs(
     let request_method = req.method.clone().unwrap_or_else(|| "GET".to_string());
     if let Err(error) = revalidate(&request_method, &fwd_target, &req.headers) {
         let reason = error.to_string();
-        state.audit.push(NetworkAuditEvent::deny(
-            &connect.host,
-            connect.port,
-            reason.clone(),
-            correlation.clone(),
-        ));
         emit_decision(
             state,
             DecisionSubject {
@@ -249,12 +231,6 @@ async fn run_l7_legs(
             Ok(None) => None,
             Err(error) => {
                 let reason = format!("MCP frame refused: {error}");
-                state.audit.push(NetworkAuditEvent::deny(
-                    &connect.host,
-                    connect.port,
-                    reason.clone(),
-                    correlation.clone(),
-                ));
                 emit_decision(
                     state,
                     DecisionSubject {
@@ -332,12 +308,6 @@ async fn run_l7_legs(
         Ok(permit) => permit,
         Err(error) => {
             let reason = format!("request effect interception failed: {error}");
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                reason.clone(),
-                correlation.clone(),
-            ));
             emit_decision(
                 state,
                 DecisionSubject {
@@ -420,23 +390,14 @@ async fn run_l7_legs(
     // line as the reason.
     res.headers.remove(crate::PROXY_ORIGIN_HEADER);
 
-    let redirect_location = match response_leg::evaluate_and_apply(&state.controls, &mut res, &cx) {
-        ResponseDecision::Block(reason) => {
-            let reason = reason.to_string(); // format once, use for both audit sinks
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                reason.clone(),
-                correlation.clone(),
-            ));
-            return Ok(WorkloadResponse::refusal(
-                403,
-                b"response blocked by egress control",
-            ));
-        }
-        ResponseDecision::RedirectReentry(location) => Some(location),
-        ResponseDecision::Return => None,
-    };
+    if let ResponseDecision::Block =
+        response_leg::evaluate_and_apply(&state.controls, &mut res, &cx)
+    {
+        return Ok(WorkloadResponse::refusal(
+            403,
+            b"response blocked by egress control",
+        ));
+    }
 
     // Lazy remote MCP discovery: on the workload's `tools/list` to a configured MCP server, stage
     // the response catalog into the authority so the server's per-tool actions reach runtime
@@ -470,35 +431,8 @@ async fn run_l7_legs(
     };
     let response_permit = match claim_effect(state, &response_attempt) {
         Ok(permit) => permit,
-        Err(error) => {
-            let reason = format!("response release interception failed: {error}");
-            state.audit.push(NetworkAuditEvent::deny(
-                &connect.host,
-                connect.port,
-                reason.clone(),
-                correlation.clone(),
-            ));
-            return Ok(interceptor_error(&error, None));
-        }
+        Err(error) => return Ok(interceptor_error(&error, None)),
     };
-
-    if let Some(location) = redirect_location {
-        // The client, not the proxy, follows this redirect and therefore re-enters all connection
-        // checks. The already-scrubbed redirect response still crosses the governed release boundary.
-        let reason = format!("cross-host redirect not followed: {location}");
-        state.audit.push(NetworkAuditEvent::deny(
-            &connect.host,
-            connect.port,
-            reason.clone(),
-            correlation.clone(),
-        ));
-    } else {
-        state.audit.push(NetworkAuditEvent::allow(
-            &connect.host,
-            connect.port,
-            correlation.clone(),
-        ));
-    }
 
     let relay = match (parsed_res.upgraded, websocket) {
         (Some(upstream), Some((_, slot))) => {
@@ -755,12 +689,6 @@ pub(crate) fn record_deny(
     reason: &str,
     correlation: RequestId,
 ) {
-    state.audit.push(NetworkAuditEvent::deny(
-        &connect.host,
-        connect.port,
-        reason.to_string(),
-        correlation.clone(),
-    ));
     let subject = DecisionSubject {
         host: &connect.host,
         port: connect.port,

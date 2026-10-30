@@ -11,11 +11,11 @@ not rename during the freeze.
 
 ## Public Contract
 
-The façade exports 43 names (`src/lib.rs`): 39 unconditional, and 4 behind the default-on
+The façade exports 41 names (`src/lib.rs`): 37 unconditional, and 4 behind the default-on
 `tls-intercept` feature — `MitmConfig`, `MitmHandle`, `MitmInterceptor`, `ResponseLimits` — which stay
 behind it. `audit::Decision` exits as `AuditDecision`. `normalize_host` and `is_bindable_host` are
 the one host spelling, exported for `policy::spelling`, which refuses a host literal no bound host
-can equal. A 44th name needs a named external caller.
+can equal. A 42nd name needs a named external caller.
 
 - Keep implementation modules private, re-export the supported surface from `src/lib.rs`, and keep
   `#![warn(missing_docs, unreachable_pub)]` enabled.
@@ -118,8 +118,9 @@ Conventions: `docs/conventions.md`.
   protection is its boundary
   ([memory is a defended asset](../../docs/design/decisions.md#the-trusted-processs-memory-is-a-defended-asset)).
   Only the public cert reaches disk, at `0o400`.
-- Return `ResponseDecision::RedirectReentry` for a cross-host 3xx, only after the response fold.
-  Otherwise a redirect reaches a refused host or releases an unscrubbed secret.
+- Release a reply only after the response fold (`response_leg::evaluate_and_apply`), so a redirect
+  or any other reply that carries a secret is scrubbed first. The workload follows a redirect, so
+  each hop is a new request that policy decides.
 - Keep the set-level prefilter in `evaluate_request` and `evaluate_response`; deleting the
   "redundant" `continue` gives a two-route box a `MutationCollision` outage.
 - Count only `SetHeader`, `RewritePath`, and `AddQueryParam` in collision detection; `StripQueryParam`

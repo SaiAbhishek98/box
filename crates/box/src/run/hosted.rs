@@ -634,7 +634,6 @@ impl HostedBox {
         let proxy = MitmInterceptor::start_with_emitter_and_opened_ca(
             MitmConfig {
                 intercept_ca_dir: Some(trust.clone()),
-                credential_env: projection.phantom_environment,
                 // The servers the gateway frames are the servers the policy door tracks.
                 mcp_servers: remote_mcp_servers,
                 ..MitmConfig::default()

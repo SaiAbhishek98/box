@@ -17,9 +17,7 @@ mod seams;
 #[cfg(feature = "tls-intercept")]
 mod transport;
 
-pub use audit::{
-    Decision as AuditDecision, EgressDecision, NetworkAuditEvent, RequestId, SharedAuditLog,
-};
+pub use audit::{Decision as AuditDecision, EgressDecision, RequestId};
 pub use boundary::{
     BodyRef, DenyReason, HeaderMap, InterceptedRequest, InterceptedResponse, Mutation,
     MutationTarget, Target, Verdict,
